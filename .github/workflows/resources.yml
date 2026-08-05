@@ -1,0 +1,72 @@
+name: resources
+
+# 拖一张 <slug>.jpg 进 _2023.10.07/src/resources/ 即可：
+#   CI 小写化文件名 → md5(slug) → 居中裁 400x400 转 webp → 原图归档进 _src/
+# 想改尺寸/质量：改下面的参数，然后手动跑一次 workflow_dispatch，从 _src/ 全量重建。
+on:
+  push:
+    branches: [master]
+    # 单星号不跨目录，所以 _src/ 里的归档原图不会触发本 workflow
+    paths:
+      - '_2023.10.07/src/resources/*.jpg'
+      - '_2023.10.07/src/resources/*.jpeg'
+      - '_2023.10.07/src/resources/*.png'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install imagemagick
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
+
+      - name: 新图 - 改名 + 转换 + 归档原图
+        if: github.event_name == 'push'
+        run: |
+          IM=$(command -v magick || command -v convert)
+          cd _2023.10.07/src/resources
+          mkdir -p _src
+          shopt -s nullglob nocaseglob
+          for f in *.jpg *.jpeg *.png; do
+            ext=$(printf '%s' "${f##*.}" | tr 'A-Z' 'a-z')
+            slug=$(printf '%s' "${f%.*}" | tr 'A-Z' 'a-z')   # 强制小写，否则 hash 与库里对不上
+            if [ ${#slug} -eq 32 ]; then
+              hash="$slug"                                    # 已经是 md5，不再二次 hash
+            else
+              hash=$(printf '%s' "$slug" | md5sum | cut -d' ' -f1)
+            fi
+            "$IM" "$f" -resize 400x400^ -gravity center -extent 400x400 \
+                  -quality 82 "$hash.webp"
+            mv "$f" "_src/$hash.$ext"
+            echo "$f -> $hash.webp   (原图归档 _src/$hash.$ext)"
+          done
+
+      - name: 手动全量重建 - 从 _src/ 重新生成 webp
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          IM=$(command -v magick || command -v convert)
+          cd _2023.10.07/src/resources
+          shopt -s nullglob
+          for f in _src/*; do
+            hash=$(basename "${f%.*}")
+            "$IM" "$f" -resize 400x400^ -gravity center -extent 400x400 \
+                  -quality 82 "$hash.webp"
+            echo "rebuild $hash.webp"
+          done
+
+      - name: 提交
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A _2023.10.07/src/resources
+          if git diff --staged --quiet; then
+            echo "没有变化，跳过提交"
+          else
+            git commit -m "build resources [skip ci]"
+            git push
+          fi
